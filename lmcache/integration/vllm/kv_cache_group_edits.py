@@ -92,10 +92,20 @@ def _declares_slot_compression(spec: KVCacheSpec) -> bool:
     ``lmcache.v1.kv_layer_groups``.
     """
     return (
-        getattr(spec, "tokens_per_state", 1) > 1
+        _tokens_per_state(spec) > 1
         or getattr(spec, "compress_ratio", 1) > 1
         or getattr(spec, "tq_slot_size", 0) > 0
     )
+
+
+def _tokens_per_state(spec: KVCacheSpec) -> int:
+    """vLLM unified KV cache slot packing (``num_states = block_size //
+    tokens_per_state``); the base property raises ``NotImplementedError`` for
+    specs that do not implement it, so ``getattr`` alone is not enough."""
+    try:
+        return int(getattr(spec, "tokens_per_state", 1))
+    except NotImplementedError:
+        return 1
 
 
 def _num_states(spec: KVCacheSpec) -> int:

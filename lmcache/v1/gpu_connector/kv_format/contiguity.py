@@ -160,11 +160,14 @@ def _validate_dim0_padded_layout(tensor: torch.Tensor) -> int:
         _fail("ndim < 2")
     if stride[-1] != 1:
         _fail("stride[-1] != 1 (inner dim not contiguous)")
-    if stride[-2] != shape[-1]:
+    # A size-1 dim carries no addressing information (PyTorch may report any
+    # stride for it, e.g. the singleton head axis of vLLM's unified
+    # [NB, 1, BS, CS] views), so it cannot introduce padding.
+    if shape[-2] != 1 and stride[-2] != shape[-1]:
         _fail("stride[-2] != shape[-1] (last-two dims not tightly packed)")
     inner_tight = 1
     for i in range(ndim - 1, 0, -1):
-        if i < ndim - 1 and stride[i] != inner_tight:
+        if i < ndim - 1 and shape[i] != 1 and stride[i] != inner_tight:
             _fail(
                 f"dim {i} stride {stride[i]} != tight {inner_tight} "
                 "(interior-dim padding is not supported)"

@@ -771,6 +771,32 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         # Smallest token count aligned to every group's paged-chunk
         # boundary; used to round down vLLM APC hit counts.
         self._hit_alignment_tokens = math.lcm(*cached_spans)
+        # Recurrent (Mamba/GDN) and sliding-window groups only keep reusable
+        # state snapshots at retained prefix-cache checkpoints. vLLM's sparse
+        # retention (prefix_cache_retention_interval=0) keeps only the latest
+        # replay boundary, so stored chunks would carry null state pages and
+        # a hit ending on one resumes from a wrong state. Require checkpoints
+        # on every LMCache chunk boundary.
+        needs_checkpoints = any(
+            not is_scratch_spec(spec)
+            and any(
+                c.__name__ == "MambaSpec" or "SlidingWindow" in c.__name__
+                for c in type(spec).__mro__
+            )
+            for spec in _iter_kv_cache_specs(kv_cache_config)
+        )
+        if needs_checkpoints and self.role == KVConnectorRole.SCHEDULER:
+            interval = getattr(
+                vllm_config.cache_config, "prefix_cache_retention_interval", None
+            )
+            chunk = self.scheduler_adapter.lmcache_tokens_per_chunk
+            if interval is not None and (interval == 0 or chunk % interval != 0):
+                raise ValueError(
+                    "This model has recurrent or sliding-window KV cache groups; "
+                    "LMCache needs a state checkpoint at every chunk boundary. "
+                    f"Set --prefix-cache-retention-interval to a divisor of the "
+                    f"LMCache chunk size ({chunk}, e.g. {chunk}), got {interval}."
+                )
         if self.role == KVConnectorRole.SCHEDULER:
             # Chunk boundaries must land on every group's paged-chunk
             # boundary so per-group block-id slicing stays aligned.

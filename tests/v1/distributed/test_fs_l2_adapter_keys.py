@@ -13,9 +13,9 @@ import pytest
 
 # First Party
 from lmcache.v1.distributed.api import ObjectKey
-from lmcache.v1.distributed.l2_adapters.fs_l2_adapter import (
-    _filename_to_object_key,
-    _object_key_to_filename,
+from lmcache.v1.distributed.l2_adapters.fs_key_codec import (
+    filename_to_object_key as _filename_to_object_key,
+    object_key_to_filename as _object_key_to_filename,
 )
 
 

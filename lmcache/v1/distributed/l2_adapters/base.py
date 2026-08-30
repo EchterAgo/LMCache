@@ -360,6 +360,29 @@ class L2AdapterInterface(ABC):
         """Register a listener to receive L2 adapter events."""
         self._listeners.append(listener)
 
+    def adopt_existing_keys(self) -> int:
+        """Seed accounting and listeners from data persisted by a previous run.
+
+        Adapters whose backing store survives restarts (e.g. the filesystem
+        adapters) override this to scan the store, reconstruct the surviving
+        keys, and report them through ``_notify_keys_stored`` so byte
+        accounting and eviction policies (LRU order seeded oldest-first)
+        cover them. Without adoption, files from a previous server lifetime
+        are still served by lookups but are invisible to capacity tracking
+        and eviction — repeated restarts then accumulate unaccounted data
+        until the disk fills.
+
+        The storage manager calls this once per adapter, after the L2
+        eviction controller has registered its listeners (an adoption that
+        ran earlier would bypass eviction bookkeeping and recreate the leak).
+
+        Returns:
+            Number of keys adopted. The base implementation adopts nothing
+            and returns 0 (correct for adapters without persistent state or
+            whose backend keeps its own accounting).
+        """
+        return 0
+
     def set_backend_identity(self, name: str, shared: bool = False) -> None:
         """Set the identity used to tag this adapter's cache events.
 

@@ -237,6 +237,20 @@ class StorageManager:
             self._l2_eviction_controller.start()
             cleanup.callback(self._l2_eviction_controller.stop)
 
+            # Startup adoption AFTER the eviction controller has registered its
+            # listeners: objects persisted by a previous server lifetime are
+            # re-seeded into byte accounting and eviction (LRU oldest-first), so
+            # restarts reuse the on-disk cache instead of accumulating
+            # unaccounted data on top of it until the disk fills.
+            for adapter_id, adapter in self._l2_adapters.items():
+                adopted = adapter.adopt_existing_keys()
+                if adopted:
+                    logger.info(
+                        "L2 adapter %d adopted %d objects from a previous run",
+                        adapter_id,
+                        adopted,
+                    )
+
             # Controllers receive the initial set as ordered lists; they key
             # their own copies by ``descriptor.index`` (== adapter_id) and learn
             # of later changes via add_adapter/request_remove_adapter.

@@ -1,3 +1,46 @@
+# Fork notice: upstream-incompatible features (`vllm-backport` branch)
+
+This branch (`wtdcode/LMCache`, branch `vllm-backport`) carries features that
+**diverge from upstream LMCache behavior**. If you come from upstream, read
+this first; if you sync this branch onto upstream, re-audit every item.
+
+1. **L2 startup adoption** (`a6dcba98`) — on server start, filesystem L2
+   adapters scan their directory and re-seed byte accounting + LRU from
+   objects persisted by a previous run (oldest-first by mtime). Upstream
+   restarts leave old objects servable but *unaccounted and unevictable*, so
+   repeated restarts stack unaccounted generations until the disk fills.
+   Default **on** (`"adopt_existing": true` in the fs_native adapter JSON);
+   upstream has no such key. Caveat: adoption trusts the on-disk objects'
+   layout — changing `--kv-cache-dtype`, the attention backend / kernel block
+   size, or PP topology reuses same-keyed objects with a different payload
+   layout (a pre-existing upstream hazard); wipe the directory when changing
+   those, until the registration-time layout-fingerprint gate lands.
+
+2. **Fail-closed rejection of spec decode + align-mode hybrid +
+   `max_num_batched_tokens > block_size`** (`7819a529`) — upstream accepts
+   this configuration; this fork rejects it at startup because multi-block
+   prefill steps store recurrent-state chunks that deterministically corrupt
+   later prefix hits (verified on Qwen3.8-Flash-Next FP8). Set
+   `--max-num-batched-tokens` equal to the unified block size, or disable
+   speculative decoding.
+
+3. **Chunk-boundary state-checkpoint requirement for recurrent/SWA hybrids**
+   (`982868b3`) — models with recurrent or sliding-window KV groups must run
+   vLLM with `--prefix-cache-retention-interval` set to a divisor of the
+   LMCache chunk size; the connector refuses to start otherwise. Upstream
+   silently serves hits without a state checkpoint at the boundary.
+
+4. **GLM-5.3-Flash support** (`229928f5`, `821c0aab`, plus the unified-layout
+   series) — kernel-paged 4-dim MLA/indexer pools are re-viewed at
+   logical-block granularity and connector-private scratch groups (kpool
+   tail) are excluded from positional transfer. Upstream stores corrupt
+   bytes for these pools, so **GLM cache directories written by upstream (or
+   by this fork before `229928f5`) are invalid** — wipe them.
+
+Entries below marked upstream README content.
+
+---
+
 <div align="center">
   <p align="center">
     <img src="asset/logo.png" alt="lmcache logo" width="45%">

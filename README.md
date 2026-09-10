@@ -1,41 +1,77 @@
-# Fork notice: upstream-incompatible features (`vllm-backport` branch)
+# Fork notice: upstream-incompatible features (`vllm-backport-0.13` branch)
 
-This branch (`wtdcode/LMCache`, branch `vllm-backport`) carries features that
-**diverge from upstream LMCache behavior**. If you come from upstream, read
-this first; if you sync this branch onto upstream, re-audit every item.
+This branch (`wtdcode/LMCache`, branch `vllm-backport-0.13`) carries features
+that **diverge from upstream LMCache behavior**. It is the fork's
+`vllm-backport` series re-based onto upstream `dev` at `c1276856`
+(2026-09-10) and pairs with the vLLM fork branch `port-0.13`. If you come
+from upstream, read this first; if you sync this branch onto upstream,
+re-audit every item.
 
-1. **L2 startup adoption** (`a6dcba98`) — on server start, filesystem L2
-   adapters scan their directory and re-seed byte accounting + LRU from
-   objects persisted by a previous run (oldest-first by mtime). Upstream
-   restarts leave old objects servable but *unaccounted and unevictable*, so
-   repeated restarts stack unaccounted generations until the disk fills.
-   Default **on** (`"adopt_existing": true` in the fs_native adapter JSON);
-   upstream has no such key. Caveat: adoption trusts the on-disk objects'
-   layout — changing `--kv-cache-dtype`, the attention backend / kernel block
-   size, or PP topology reuses same-keyed objects with a different payload
-   layout (a pre-existing upstream hazard); wipe the directory when changing
-   those, until the registration-time layout-fingerprint gate lands.
+1. **L2 startup adoption** (`l2: adopt persisted objects ...`) — on server
+   start, filesystem L2 adapters scan their directory and re-seed byte
+   accounting + LRU from objects persisted by a previous run (oldest-first
+   by mtime). Upstream restarts leave old objects servable but *unaccounted
+   and unevictable*, so repeated restarts stack unaccounted generations
+   until the disk fills. Default **on** (`"adopt_existing": true` in the
+   fs_native adapter JSON); upstream has no such key (upstream PR #4571
+   "restore fs_native cache state after restart" is the closest open
+   proposal). Caveat: adoption trusts the on-disk objects' layout — changing
+   `--kv-cache-dtype`, the attention backend / kernel block size, PP
+   topology, or the connector's Mamba page view (see item 5) reuses
+   same-keyed objects with a different payload layout (a pre-existing
+   upstream hazard); wipe the directory when changing those, until the
+   registration-time layout-fingerprint gate lands.
 
 2. **Fail-closed rejection of spec decode + align-mode hybrid +
-   `max_num_batched_tokens > block_size`** (`7819a529`) — upstream accepts
-   this configuration; this fork rejects it at startup because multi-block
-   prefill steps store recurrent-state chunks that deterministically corrupt
-   later prefix hits (verified on Qwen3.8-Flash-Next FP8). Set
-   `--max-num-batched-tokens` equal to the unified block size, or disable
-   speculative decoding.
+   `max_num_batched_tokens > block_size`** (`reject spec decode with
+   multi-block prefill steps`) — upstream accepts this configuration; this
+   fork rejects it at startup because multi-block prefill steps store
+   recurrent-state chunks that deterministically corrupt later prefix hits
+   (verified on Qwen3.8-Flash-Next FP8). Set `--max-num-batched-tokens`
+   equal to the unified block size, or disable speculative decoding.
+   Upstream PR #5004 ("Don't store MTP's speculative scratch block as a
+   Mamba state") looks like the root-cause fix; re-evaluate this guard once
+   it merges.
 
 3. **Chunk-boundary state-checkpoint requirement for recurrent/SWA hybrids**
-   (`982868b3`) — models with recurrent or sliding-window KV groups must run
-   vLLM with `--prefix-cache-retention-interval` set to a divisor of the
-   LMCache chunk size; the connector refuses to start otherwise. Upstream
-   silently serves hits without a state checkpoint at the boundary.
+   (`require prefix-cache checkpoints on chunk boundaries`) — models with
+   recurrent or sliding-window KV groups must run vLLM with
+   `--prefix-cache-retention-interval` set to a divisor of the LMCache chunk
+   size; the connector refuses to start otherwise. Upstream silently serves
+   hits without a state checkpoint at the boundary.
 
-4. **GLM-5.3-Flash support** (`229928f5`, `821c0aab`, plus the unified-layout
-   series) — kernel-paged 4-dim MLA/indexer pools are re-viewed at
-   logical-block granularity and connector-private scratch groups (kpool
-   tail) are excluded from positional transfer. Upstream stores corrupt
-   bytes for these pools, so **GLM cache directories written by upstream (or
-   by this fork before `229928f5`) are invalid** — wipe them.
+4. **GLM-5.3-Flash / vLLM unified-layout support** (`re-view kernel-paged
+   4-dim MLA/indexer pools`, `treat non-prefix-cacheable engine groups as
+   non-positional`, `permute unified attention views`, `tokens_per_state`
+   compression) — kernel-paged 4-dim MLA/indexer pools are re-viewed at
+   logical-block granularity, unified `[B, H, N, C]` views are permuted
+   into physical order (group edits now run for non-Mamba models and on
+   leaf specs), `AttentionSpec.tokens_per_state > 1` is treated as slot
+   compression, and connector-private scratch groups (`CircularBufferSpec`,
+   `KpoolTailSpec`; `prefix_cacheable` / `participates_in_prefix_caching`
+   is `False`) are excluded from registration, block-id slicing and
+   capacity math. Upstream stores corrupt bytes for these pools, so **GLM
+   cache directories written by upstream (or by the fork before the
+   subpaged MLA edit) are invalid** — wipe them.
+
+5. **Dropped in favour of upstream** — the fork's own `KVCacheLayout`
+   resolution (`layer_view_order` probing), the connector-to-adapter
+   layout-hint threading, the block-axis (dim-0 padded) `NL_X_NB_*_CS`
+   formats, and the one-slot-per-block fallback for padded Mamba pages are
+   all superseded by upstream `a0e4a4c2` ("vLLM LBHNC KVLayout metadata"),
+   which maps `LBNHC`/`LBHNC`/`BLHNC`/`BLNHC` by name and re-views padded
+   Mamba pages by `as_strided` tiling instead. The tiling changes the
+   stored byte layout of Mamba-state objects relative to the old
+   `vllm-backport` branch, so **wipe L2 directories of Mamba-hybrid models
+   when moving from `vllm-backport` to this branch**. Upstream `ca2f4744`
+   dropped the connector layout preference; the fork never had one.
+
+Also carried (bug fixes, no config surface): the scheduler-side heartbeat
+threads are actually started (`_heartbeats` guard), `REGISTER_KV_CACHE` /
+`UNREGISTER_KV_CACHE` run on the affinity pool (declared `BLOCKING`) so
+large-engine registration does not starve other workers' pings, prefetch
+drops keys that fail read-lock acquisition from the hit set, and
+contiguity validation ignores strides of size-1 dims.
 
 Entries below marked upstream README content.
 

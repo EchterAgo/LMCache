@@ -1450,8 +1450,18 @@ class LMCacheMPWorkerAdapter:
                 f"{self._mq_timeout}s. Is the server running?"
             ) from None
 
+        # Start pinging as soon as the registration succeeds. Deferring
+        # this to the first store/retrieve lets the server reap an
+        # idle-after-registration worker: without a PING the instance is
+        # never latched as ping-proven, so the reaper judges it against
+        # ``worker_registration_grace_seconds`` (default 3600 s) instead of
+        # the traffic-refreshed reap timeout, and drops the KV-cache
+        # context while the engine stays healthy -- and the recover
+        # callback never fires to re-register (no unhealthy->healthy edge).
+        self._ensure_heartbeat_started()
+
     def _ensure_heartbeat_started(self) -> None:
-        """Lazily start the heartbeat thread on first store/retrieve.
+        """Lazily start the heartbeat thread on registration/first transfer.
 
         The heartbeat starts healthy (the event was set at construction). A
         live worker pings every interval, refreshing its server-side

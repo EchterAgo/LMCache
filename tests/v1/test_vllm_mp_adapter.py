@@ -217,6 +217,43 @@ def test_register_kv_caches_updates_kv_caches_and_submits(fake_adapter):
     req_client.register_kv_cache.assert_called_once()
 
 
+def test_register_kv_caches_starts_heartbeat_without_traffic(fake_adapter):
+    """Successful registration starts the heartbeat immediately.
+
+    Regression: deferring the heartbeat to the first store/retrieve left
+    an idle-after-registration worker without PINGs, so the server never
+    latched it as ping-proven and reaped its KV-cache context after
+    ``worker_registration_grace_seconds`` with no path to re-register.
+    """
+    adapter, _req_client, _ = fake_adapter
+    fake_tensor = MagicMock()
+    fake_tensor.device.type = "cuda"
+
+    adapter.register_kv_caches({"layer.0": fake_tensor})
+
+    assert len(FakeHeartbeatThread.instances) == 1
+    heartbeat = FakeHeartbeatThread.instances[0]
+    assert heartbeat.instance_id == adapter.instance_id
+    assert heartbeat.calls == ["register_recover_callback", "start"]
+
+    # Re-entry (e.g. the recover callback re-registering) is idempotent.
+    adapter._send_register_kv_caches_request({"layer.0": fake_tensor})
+    assert len(FakeHeartbeatThread.instances) == 1
+
+
+def test_failed_registration_does_not_start_heartbeat(fake_adapter):
+    """A registration that times out leaves no heartbeat (nothing to keep alive)."""
+    adapter, _send_mock, future = fake_adapter
+    future.result.side_effect = TimeoutError("server down")
+    fake_tensor = MagicMock()
+    fake_tensor.device.type = "cuda"
+
+    with pytest.raises(ConnectionError):
+        adapter.register_kv_caches({"layer.0": fake_tensor})
+
+    assert FakeHeartbeatThread.instances == []
+
+
 def test_register_kv_caches_raises_connection_error_on_timeout(fake_adapter):
     """Public register_kv_caches surfaces ConnectionError on MQ timeout."""
     adapter, _send_mock, future = fake_adapter

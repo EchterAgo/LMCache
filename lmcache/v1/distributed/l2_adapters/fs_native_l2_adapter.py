@@ -204,6 +204,18 @@ def _make_adapter_class(native_cls):
             if not self._adopt_existing:
                 return 0
             adoptable = scan_adoptable_files(self._base_path, self._relative_tmp_dir)
+            # Seed per-key sizes FIRST so the demux thread's delete
+            # completion path (``_OP_DELETE``) recognizes adopted keys:
+            # it only fires ``_notify_keys_deleted`` (byte-accounting
+            # decrement + ``policy.on_keys_removed``) for keys present in
+            # ``_key_sizes``. Without this, evicting an adopted key
+            # unlinks the file but never drops the usage counter nor
+            # drains the LRU list — the policy then re-selects the same
+            # already-deleted keys every cycle (ENOENT spin) and the disk
+            # fills until stores fail.
+            with self._lock:
+                for key, size, _mtime in adoptable:
+                    self._key_sizes.setdefault(key, size)
             for start in range(0, len(adoptable), _ADOPT_NOTIFY_BATCH):
                 batch = adoptable[start : start + _ADOPT_NOTIFY_BATCH]
                 self._notify_keys_stored(

@@ -204,6 +204,10 @@ def _make_adapter_class(native_cls):
             if not self._adopt_existing:
                 return 0
             adoptable = scan_adoptable_files(self._base_path, self._relative_tmp_dir)
+            # Seed _key_sizes so adopted keys are accounted for on eviction.
+            with self._lock:
+                for key, size, _mtime in adoptable:
+                    self._key_sizes.setdefault(key, size)
             for start in range(0, len(adoptable), _ADOPT_NOTIFY_BATCH):
                 batch = adoptable[start : start + _ADOPT_NOTIFY_BATCH]
                 self._notify_keys_stored(

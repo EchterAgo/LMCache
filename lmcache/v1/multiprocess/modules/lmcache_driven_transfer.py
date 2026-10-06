@@ -406,7 +406,19 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
             self._cache_contexts.clear()
         self._release_entries(entries)
 
-    @request_handler()
+    # BLOCKING + client affinity, not SYNC: registration of a large engine
+    # (e.g. DeepSeek-V4 1M-context, 88 layers per worker) can take minutes,
+    # and a SYNC handler runs inline in the mq main loop -- while one worker
+    # registers, the server answers nothing, so the remaining workers'
+    # connect pings starve into "Cannot reach the LMCache MP server" and the
+    # engine dies. The affinity pool keys on the zmq client identity, so each
+    # client's own requests stay ordered (register before store/retrieve)
+    # while different workers register concurrently and pings keep being
+    # served.
+    @request_handler(
+        HandlerType.BLOCKING,
+        requires_client_affinity=True,
+    )
     def register_kv_cache(
         self,
         instance_id: int,
@@ -497,7 +509,12 @@ class LMCacheDrivenTransferModule(InstanceLivenessTarget):
             cache_context.num_layers,
         )
 
-    @request_handler()
+    # Affinity like register_kv_cache: keeps per-client ordering with the
+    # registration and the stores that reference its contexts.
+    @request_handler(
+        HandlerType.BLOCKING,
+        requires_client_affinity=True,
+    )
     def unregister_kv_cache(self, instance_id: int) -> None:
         """Unregister the KV cache tensors for a given GPU instance ID.
 

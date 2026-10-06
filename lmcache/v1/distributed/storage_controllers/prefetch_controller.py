@@ -1538,9 +1538,37 @@ class PrefetchController(StorageControllerInterface):
 
             # Update L1 key status
             if loaded_keys:
-                l1_manager.finish_write_and_reserve_read(
+                lock_results = l1_manager.finish_write_and_reserve_read(
                     loaded_keys, read_locks=request.num_kv_readers, tag=tag
                 )
+                # A loaded key can still fail to acquire its read lock (its
+                # buffer was evicted or force-deleted between the L2 write and
+                # this atomic transition). Such keys are NOT read-locked, so
+                # they must be dropped from the hit set: leaving their bits
+                # set would advertise them to the retriever, whose
+                # unsafe_read then finds them gone ("Failed to read prefetched
+                # object ... KEY_NOT_EXIST") and fails the whole retrieve.
+                # Clearing the bits demotes them to a normal miss (recomputed
+                # locally).
+                unlocked_set = {
+                    k
+                    for k in loaded_keys
+                    if lock_results.get(k, (None, None))[0] is not L1Error.SUCCESS
+                }
+                if unlocked_set:
+                    logger.warning(
+                        "Prefetch: %d/%d loaded keys failed read-lock "
+                        "acquisition (evicted mid-transition); dropping them "
+                        "from the hit set.",
+                        len(unlocked_set),
+                        len(loaded_keys),
+                    )
+                    for gi, group in enumerate(request.key_groups):
+                        row = loaded[gi]
+                        for ci, key in enumerate(group.keys):
+                            if row.test(ci) and key in unlocked_set:
+                                row.clear(ci)
+                    loaded_keys = [k for k in loaded_keys if k not in unlocked_set]
             if failed_keys:
                 l1_manager.finish_write_and_delete(failed_keys, tag=tag)
 

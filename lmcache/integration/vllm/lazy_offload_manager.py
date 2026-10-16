@@ -249,9 +249,19 @@ class LazyOffloadManager:
                 mutated; a rebound copy is buffered instead.
         """
         pool = self._require_block_pool()
+        # Skip vLLM's null placeholder blocks (block_id 0, is_null): a hybrid
+        # model's sliding-window/linear-attention groups fill out-of-window
+        # positions with them, and they never carry a prefix-cache hash. They
+        # are not evictable -- never in the free queue, always all-zero -- so
+        # they need no eviction snapshot, and counting their missing hash as
+        # "unhashed" would reject every store op of the request. The store
+        # itself still reads them through ``op.block_ids``, so the bytes filed
+        # are unchanged. A None on a *real* block is left in place: that is
+        # the recycled-block case the policy must reject.
         block_hashes: BlockHashes = {
             block_id: pool.blocks[block_id].block_hash
             for block_id in metadata.op.flat_block_ids
+            if not pool.blocks[block_id].is_null
         }
         self._require_policy().add(self._rebind_tokens(metadata), block_hashes)
 

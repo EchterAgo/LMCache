@@ -455,9 +455,13 @@ class LazyOffloadManager:
         drain = self._require_policy().drain(
             DrainSignals(
                 new_blocks_allocated=_new_blocks(scheduler_output),
+                # Scratch groups report a 0-token span and take no blocks per
+                # step; skip them like get_vllm_scheduler_block_size does, or
+                # the division below raises ZeroDivisionError.
                 est_next_step_blocks=sum(
                     -(-scheduler_output.total_num_scheduled_tokens // tokens_per_block)
                     for tokens_per_block in self._group_tokens_per_block
+                    if tokens_per_block > 0
                 ),
                 finished_request_ids=self._requests.finished_request_ids(),
                 blocked_request_ids=self._requests.in_flight_request_ids(),

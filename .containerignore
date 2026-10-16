@@ -1,0 +1,9 @@
+# Keep host build artifacts out of the test image context: stale in-place
+# .so files shadow the freshly built wheel when running from /src.
+**/*.so
+build/
+dist/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.git

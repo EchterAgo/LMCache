@@ -1,0 +1,36 @@
+# Throwaway test image for the upgrade-0.5.6rc2 branch.
+# Builds the package from source (fresh deps) on the same runtime base the
+# production image uses. Not for deployment.
+#
+# Build:  podman build -f Containerfile.test -t localhost/lmc-test:rc2 .
+# Tests:  podman run --rm localhost/lmc-test:rc2 \
+#           python3 -m pytest tests/v1/test_vllm_mp_adapter.py -q
+
+FROM localhost/vllm-backport:latest-sm80-vllm31-fix-fp8-perf
+
+WORKDIR /src
+
+# The runtime base has nvcc but not the CUDA library dev headers that
+# torch's own headers pull in (cusparse.h etc.); needed to compile any
+# CUDA extension --i.e. lmcache's native modules.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        cuda-libraries-dev-13-0 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Build + test deps first (better layer caching across source edits).
+COPY requirements/ requirements/
+RUN pip install --no-cache-dir -r requirements/build.txt && \
+    pip install --no-cache-dir -r requirements/test.txt
+
+# Source, then editable-build against the image's torch (cu13 default) so
+# the freshly compiled extensions land in /src/lmcache itself.
+COPY . .
+ENV TORCH_CUDA_ARCH_LIST="8.0" \
+    MAX_JOBS=16 \
+    CUDA_HOME=/usr/local/cuda \
+    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_LMCACHE=0.5.6rc2+fork.test
+RUN pip install --no-cache-dir --no-build-isolation -e . \
+    && python3 -c "import lmcache; print('lmcache at', lmcache.__file__)"
+
+CMD ["python3", "-m", "pytest", "tests/v1", "-q", "--no-header", "-p", "no:cacheprovider"]

@@ -26,6 +26,15 @@ class L1ManagerProtocol(Protocol):
         """Allocate ``count`` memory objects for the given layout."""
         ...
 
+    def get_needed_bytes(self, layout_desc: MemoryLayoutDesc, count: int) -> int:
+        """Return the aligned bytes an ``allocate(layout_desc, count)`` needs.
+
+        Used by synchronous evict-to-fit to size eviction rounds. The value
+        is the sum of per-object aligned sizes; it ignores fragmentation, so
+        it is a lower bound on what must be free for the batch to succeed.
+        """
+        ...
+
     def free(self, mem_objs: list[MemoryObj]) -> L1Error:
         """Free the given memory objects."""
         ...

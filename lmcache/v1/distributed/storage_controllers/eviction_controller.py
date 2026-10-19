@@ -14,6 +14,7 @@ import time
 from lmcache.logging import init_logger
 from lmcache.v1.distributed.api import ObjectKey
 from lmcache.v1.distributed.config import EvictionConfig
+from lmcache.v1.distributed.error import L1Error
 from lmcache.v1.distributed.eviction import L1EvictionPolicy, L2EvictionPolicy
 from lmcache.v1.distributed.eviction_policy import CreateEvictionPolicy
 from lmcache.v1.distributed.internal_api import (
@@ -107,6 +108,63 @@ class L1EvictionController(EvictionController):
         self._l1_manager.register_listener(self._listener)
         self._event_bus = get_event_bus()
         self._last_extra_log = time.monotonic()
+        # Evict-to-fit: reclaim LRU memory synchronously when a batch
+        # allocation fails, instead of waiting for the watermark poll below.
+        self._l1_manager.set_sync_evictor(self.evict_to_fit)
+
+    def evict_to_fit(self, needed_bytes: int) -> bool:
+        """Evict LRU objects until ``needed_bytes`` are free in L1.
+
+        Called from ``L1Manager.reserve_write`` with the manager lock held,
+        after a batch allocation failed. Reclaims in rounds sized to the
+        request (not the bulk watermark ratio) so a small allocation does not
+        sweep 10% of the pool. Returns True when at least ``needed_bytes``
+        are free afterwards; False when the pool cannot supply them (every
+        remaining object is locked or the policy tracks nothing).
+
+        Args:
+            needed_bytes: Aligned bytes the failed batch requires.
+        """
+        used, total = self._l1_manager.get_memory_usage()
+        if total - used >= needed_bytes:
+            return True
+        evicted_keys = 0
+        while True:
+            used, total = self._l1_manager.get_memory_usage()
+            if total - used >= needed_bytes:
+                logger.debug(
+                    "L1 evict-to-fit: freed %d keys to satisfy %d bytes",
+                    evicted_keys,
+                    needed_bytes,
+                )
+                return True
+            # Size each round to the remaining need: with uniform object
+            # sizes, the fraction of the pool needed approximates the
+            # fraction of tracked keys to evict. Floor at 1% so tiny needs
+            # still make progress per policy call.
+            ratio = 1.0 if total <= 0 else max(0.01, needed_bytes / total)
+            actions = self._eviction_policy.get_eviction_actions(
+                ratio,
+                key_eligible_filter=self._l1_manager.is_key_evictable,
+            )
+            progressed = False
+            for action in actions:
+                results = self._l1_manager.delete_locked(action.keys)
+                succeeded = sum(
+                    1 for error in results.values() if error == L1Error.SUCCESS
+                )
+                if succeeded:
+                    progressed = True
+                    evicted_keys += succeeded
+            if not progressed:
+                logger.debug(
+                    "L1 evict-to-fit: stalled with %d bytes free, %d needed "
+                    "(%d keys evicted); remaining objects are locked",
+                    total - used,
+                    needed_bytes,
+                    evicted_keys,
+                )
+                return False
 
     def report_status(self) -> dict:
         return {

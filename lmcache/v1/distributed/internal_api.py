@@ -6,7 +6,7 @@ Class for distributed storage manager internal API data structures
 # Standard
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
 import enum
 
 # First Party
@@ -321,6 +321,16 @@ class L1ManagerInterface(Protocol):
         self, keys: list[ObjectKey], force: bool = False
     ) -> dict[ObjectKey, L1Error]:
         """Delete resident objects."""
+        ...
+
+    def delete_locked(
+        self, keys: list[ObjectKey], force: bool = False
+    ) -> dict[ObjectKey, L1Error]:
+        """Delete resident objects with the manager lock already held."""
+        ...
+
+    def set_sync_evictor(self, evictor: "Callable[[int], bool] | None") -> None:
+        """Register a synchronous evict-to-fit callback for reserve_write."""
         ...
 
     def touch_keys(self, keys: list[ObjectKey]) -> None:

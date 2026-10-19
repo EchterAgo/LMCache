@@ -10,6 +10,7 @@ from lmcache.v1.distributed.api import L1BackendType, MemoryLayoutDesc
 from lmcache.v1.distributed.config import L1MemoryManagerConfig
 from lmcache.v1.distributed.error import L1Error
 from lmcache.v1.distributed.internal_api import L1MemoryDesc
+from lmcache.utils import get_size_bytes
 from lmcache.v1.memory_allocators.lazy_memory_allocator import (
     LazyMemoryAllocator,
     mlock_on_fault,
@@ -21,6 +22,24 @@ from lmcache.v1.memory_management import (
 )
 
 logger = init_logger(__name__)
+
+
+def _get_address_manager(allocator: MemoryAllocatorInterface):
+    """Return the address manager backing an L1 allocator."""
+    if isinstance(allocator, MixedMemoryAllocator) and hasattr(
+        allocator.pin_allocator, "address_manager"
+    ):
+        return allocator.pin_allocator.address_manager
+    if isinstance(allocator, LazyMemoryAllocator):
+        return allocator.get_address_manager()
+    # Device-DAX (and any allocator exposing a primary address manager): the
+    # first arena's manager carries the alignment used for every arena.
+    address_manager = getattr(allocator, "address_manager", None)
+    if address_manager is not None:
+        return address_manager
+    raise NotImplementedError(
+        "get_memory_usage is not implemented for this allocator type."
+    )
 
 
 # HELPER FUNCTIONS
@@ -140,6 +159,18 @@ class L1MemoryManager:
             return L1Error.OUT_OF_MEMORY, []
         return L1Error.SUCCESS, objects
 
+    def get_needed_bytes(self, layout_desc: MemoryLayoutDesc, count: int) -> int:
+        """Return the aligned bytes needed for ``count`` objects of the layout.
+
+        Mirrors ``AddressManager.compute_aligned_size`` (power-of-two align)
+        without reaching into the allocator, which is arena-based on the
+        Device-DAX tier.
+        """
+        unit_raw_size = get_size_bytes(layout_desc.shapes, layout_desc.dtypes)
+        align = self._align_bytes
+        unit_aligned = (unit_raw_size + align - 1) & ~(align - 1)
+        return unit_aligned * count
+
     def free(self, mem_objs: list[MemoryObj]) -> L1Error:
         """
         Free the provided memory objects.
@@ -183,18 +214,7 @@ class L1MemoryManager:
         if hasattr(self._allocator, "get_memory_usage"):
             return self._allocator.get_memory_usage()
 
-        def get_address_manager(allocator: MemoryAllocatorInterface):
-            if isinstance(allocator, MixedMemoryAllocator) and hasattr(
-                allocator.pin_allocator, "address_manager"
-            ):
-                return allocator.pin_allocator.address_manager
-            if isinstance(allocator, LazyMemoryAllocator):
-                return allocator.get_address_manager()
-            raise NotImplementedError(
-                "get_memory_usage is not implemented for this allocator type."
-            )
-
-        address_manager = get_address_manager(self._allocator)
+        address_manager = _get_address_manager(self._allocator)
         free_size = address_manager.get_free_size()
         total_size = address_manager.get_heap_size()
         used_size = total_size - free_size

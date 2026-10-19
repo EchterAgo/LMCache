@@ -93,6 +93,12 @@ class GDSL1MemoryManager:
             objects.append(GDSMemoryObject(meta))
         return L1Error.SUCCESS, objects
 
+    def get_needed_bytes(self, layout_desc: MemoryLayoutDesc, count: int) -> int:
+        """Return the aligned bytes needed for ``count`` objects of the layout."""
+        chunk_bytes = get_size_bytes(layout_desc.shapes, layout_desc.dtypes)
+        aligned = self._address_manager.compute_aligned_size(chunk_bytes)
+        return aligned * count
+
     def free(self, mem_objs: list[MemoryObj]) -> L1Error:
         """Return the slab regions of the given objects to the address manager.
 

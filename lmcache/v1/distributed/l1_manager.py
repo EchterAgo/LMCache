@@ -248,6 +248,13 @@ class L1Manager(L1ManagerInterface):
 
         self._registered_listeners: list[L1ManagerListener] = []
 
+        # Optional synchronous evict-to-fit callback, registered by the L1
+        # eviction controller. Invoked from ``reserve_write`` (while the
+        # manager lock is held) with the aligned bytes a failed batch needs;
+        # it must reclaim LRU memory and return True when enough is free.
+        # ``None`` disables evict-to-fit (allocation fails as before).
+        self._sync_evictor: Callable[[int], bool] | None = None
+
         self._event_bus = get_event_bus()
 
         with L1Manager._gauge_lock:
@@ -286,6 +293,22 @@ class L1Manager(L1ManagerInterface):
         """
         with self._lock:
             self._registered_listeners.append(listener)
+
+    def set_sync_evictor(self, evictor: "Callable[[int], bool] | None") -> None:
+        """Register a synchronous evict-to-fit callback for ``reserve_write``.
+
+        The callback is invoked (with the manager lock already held) when a
+        batch allocation fails, receiving the aligned bytes the batch needs.
+        It must reclaim LRU-resident memory and return ``True`` once at least
+        that many bytes are free, or ``False`` if it cannot. Passing ``None``
+        disables evict-to-fit so a failed allocation returns OUT_OF_MEMORY
+        immediately, preserving the pre-existing behavior.
+
+        Args:
+            evictor: The callback, or ``None`` to disable.
+        """
+        with self._lock:
+            self._sync_evictor = evictor
 
     @l1_mgr_synchronized
     def reserve_read(
@@ -544,6 +567,19 @@ class L1Manager(L1ManagerInterface):
             layout_desc, len(need_to_allocate)
         )
 
+        if err != L1Error.SUCCESS and self._sync_evictor is not None:
+            # Evict-to-fit: the batch failed for lack of free space, so
+            # synchronously reclaim LRU memory and retry once. The manager
+            # lock is held here, so no concurrent reserve can consume the
+            # reclaimed bytes between the evictor and the retry.
+            needed = self._memory_manager.get_needed_bytes(
+                layout_desc, len(need_to_allocate)
+            )
+            if self._sync_evictor(needed):
+                err, allocated_objs = self._memory_manager.allocate(
+                    layout_desc, len(need_to_allocate)
+                )
+
         if err != L1Error.SUCCESS:
             for key, _ in need_to_allocate:
                 ret[key] = (L1Error.OUT_OF_MEMORY, None)
@@ -766,6 +802,17 @@ class L1Manager(L1ManagerInterface):
             KEY_IS_LOCKED: The key is read-locked, or a live staging object
                 exists for it, so it cannot be deleted. Never returned when
                 ``force`` is True.
+        """
+        return self.delete_locked(keys, force)
+
+    def delete_locked(
+        self, keys: list[ObjectKey], force: bool = False
+    ) -> dict[ObjectKey, L1Error]:
+        """Delete ``keys`` assuming the caller holds ``self._lock``.
+
+        Same semantics and return contract as :meth:`delete`; split out so the
+        synchronous evict-to-fit path inside :meth:`reserve_write` can reclaim
+        memory without re-acquiring the non-reentrant manager lock.
         """
         need_to_free: list[MemoryObj] = []
         ret: dict[ObjectKey, L1Error] = {}

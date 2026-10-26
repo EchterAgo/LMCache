@@ -164,6 +164,18 @@ class ObjectKeyIdentity:
     model_name: str
     object_group_id: int = 0
     cache_salt: str = ""
+    kv_dtype: str = ""
+    """KV-cache element dtype this object's bytes are serialized in (e.g.
+    ``"bfloat16"``, ``"fp8_e4m3fn"``). Part of cache identity: the same token
+    content cached under two different ``--kv-cache-dtype`` settings produces
+    different ObjectKeys, so a dtype switch can never serve a stale-layout
+    object. Defaults to empty string, in which case serialized keys and
+    filenames match the pre-kv_dtype shape (no trailing dtype field), so no
+    migration is needed for deployments that do not set it.
+
+    Invariant: must not contain ``@``, ``/``, ``\\``, or NUL (same field
+    separator / path / C-string rationale as ``cache_salt``). Max length 128.
+    """
 
     def __post_init__(self) -> None:
         if "@" in self.model_name:
@@ -174,6 +186,10 @@ class ObjectKeyIdentity:
             raise ValueError("cache_salt must not contain '@', '/', '\\' or NUL")
         if len(self.cache_salt) > 128:
             raise ValueError("cache_salt exceeds max length 128")
+        if any(char in self.kv_dtype for char in "@/\\\x00"):
+            raise ValueError("kv_dtype must not contain '@', '/', '\\' or NUL")
+        if len(self.kv_dtype) > 128:
+            raise ValueError("kv_dtype exceeds max length 128")
 
 
 @dataclass(frozen=True, init=False)
@@ -201,6 +217,7 @@ class ObjectKey:
         kv_rank: int | None = None,
         object_group_id: int | None = None,
         cache_salt: str | None = None,
+        kv_dtype: str | None = None,
         *,
         identity: ObjectKeyIdentity | None = None,
         extra_attributes: dict[str, object] | None = None,
@@ -217,6 +234,7 @@ class ObjectKey:
             kv_rank: Packed KV rank; required without ``identity``.
             object_group_id: Object group; defaults to 0 without an identity.
             cache_salt: Isolation salt; defaults to empty without an identity.
+            kv_dtype: KV-cache dtype; defaults to empty without an identity.
             identity: Immutable identity providing fields not supplied explicitly.
             extra_attributes: Request-scoped metadata exposed to L2 adapters,
                 shallow-copied so the key can be enriched independently.
@@ -234,6 +252,7 @@ class ObjectKey:
                 kv_rank=kv_rank,
                 object_group_id=object_group_id if object_group_id is not None else 0,
                 cache_salt=cache_salt if cache_salt is not None else "",
+                kv_dtype=kv_dtype if kv_dtype is not None else "",
             )
         elif (
             chunk_hash is not None
@@ -241,6 +260,7 @@ class ObjectKey:
             or kv_rank is not None
             or object_group_id is not None
             or cache_salt is not None
+            or kv_dtype is not None
         ):
             identity = replace(
                 identity,
@@ -259,6 +279,7 @@ class ObjectKey:
                 cache_salt=cache_salt
                 if cache_salt is not None
                 else identity.cache_salt,
+                kv_dtype=kv_dtype if kv_dtype is not None else identity.kv_dtype,
             )
         object.__setattr__(self, "identity", identity)
         object.__setattr__(
@@ -292,6 +313,11 @@ class ObjectKey:
         """Read object_group_id from the identity."""
         return self.identity.object_group_id
 
+    @property
+    def kv_dtype(self) -> str:
+        """Read kv_dtype from the identity."""
+        return self.identity.kv_dtype
+
     def to_encoded_object_key(self) -> "EncodedObjectKey":
         """Return the JSON-safe :class:`EncodedObjectKey` projection."""
         return EncodedObjectKey(
@@ -300,6 +326,7 @@ class ObjectKey:
             kv_rank=self.kv_rank,
             object_group_id=self.object_group_id,
             cache_salt=self.cache_salt,
+            kv_dtype=self.kv_dtype,
         )
 
     @staticmethod
@@ -395,6 +422,10 @@ class EncodedObjectKey:
 
     cache_salt: str = ""
 
+    kv_dtype: str = ""
+    """Defaults to ``""`` so pre-``kv_dtype`` wire payloads still
+    deserialize (msgspec maps by field name)."""
+
     def to_object_key(self) -> ObjectKey:
         """Recover the corresponding :class:`ObjectKey`.
 
@@ -408,6 +439,7 @@ class EncodedObjectKey:
             kv_rank=self.kv_rank,
             object_group_id=self.object_group_id,
             cache_salt=self.cache_salt,
+            kv_dtype=self.kv_dtype,
         )
 
 
@@ -766,7 +798,9 @@ def ipc_key_to_object_keys(
     ObjectKeys are per-user isolated whenever the sender set a non-empty
     salt. There is intentionally no separate ``cache_salt`` parameter —
     duplicating the source of truth would risk silent isolation bugs
-    where a caller passes ``ipc_key`` but forgets the salt.
+    where a caller passes ``ipc_key`` but forgets the salt. ``kv_dtype``
+    is likewise read from ``ipc_key`` so a dtype switch yields distinct
+    keys.
 
     ``request_configs`` is likewise read from ``ipc_key`` and exposed through
     every produced key's ``extra_attributes`` field. Each key receives a
@@ -774,7 +808,7 @@ def ipc_key_to_object_keys(
 
     Args:
         ipc_key: The IPC key providing model_name, world_size, worker_id,
-            cache_salt, and request_configs.
+            cache_salt, kv_dtype, and request_configs.
         chunk_hashes: List of chunk hash bytes, one per chunk.
         object_group_ids: Object group ids to produce keys for.
 
@@ -783,6 +817,7 @@ def ipc_key_to_object_keys(
         for ``object_group_ids[i]``.
     """
     cache_salt = ipc_key.cache_salt
+    kv_dtype = ipc_key.kv_dtype
     extra_attributes = (
         ipc_key.request_configs if ipc_key.request_configs is not None else {}
     )
@@ -799,6 +834,7 @@ def ipc_key_to_object_keys(
                 kv_rank=kv_rank,
                 object_group_id=object_group_id,
                 cache_salt=cache_salt,
+                kv_dtype=kv_dtype,
                 extra_attributes=extra_attributes,
             )
             for chunk_hash in chunk_hashes
@@ -874,6 +910,7 @@ def ipc_key_to_grouped_object_keys(
                             kv_rank=kv_rank,
                             object_group_id=object_group_id,
                             cache_salt=ipc_key.cache_salt,
+                            kv_dtype=ipc_key.kv_dtype,
                             extra_attributes=extra_attributes,
                         )
                         for chunk_hash in chunk_hashes

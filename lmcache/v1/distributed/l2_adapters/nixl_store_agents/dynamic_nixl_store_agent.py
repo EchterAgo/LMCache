@@ -28,7 +28,9 @@ def _object_key_to_filename(key: ObjectKey) -> str:
 
     A non-empty ``cache_salt`` is appended as a trailing ``@``-delimited
     field, matching the S3 and filesystem L2 adapters. An empty salt retains
-    the exact legacy filename.
+    the exact legacy filename. A non-empty ``kv_dtype`` appends the salt slot
+    (even when empty) plus a trailing ``@``-delimited dtype field, so a
+    --kv-cache-dtype switch yields distinct object names.
 
     Args:
         key: Key identifying the stored cache object.

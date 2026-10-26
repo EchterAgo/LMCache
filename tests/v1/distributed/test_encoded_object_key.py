@@ -91,6 +91,7 @@ class TestRoundTrip:
             "kv_rank": 0,
             "object_group_id": 1,
             "cache_salt": "x",
+            "kv_dtype": "",
         }
 
 

@@ -24,11 +24,18 @@ import os
 import pytest
 
 # First Party
-from lmcache.v1.distributed.api import ObjectKey
+from lmcache.v1.distributed.api import (
+    MemoryResidency,
+    MemorySegment,
+    MemoryTags,
+    ObjectKey,
+)
 from lmcache.v1.distributed.config import EvictionConfig
 from lmcache.v1.distributed.eviction import L2EvictionPolicy
 from lmcache.v1.distributed.eviction_policy import CreateEvictionPolicy
-from lmcache.v1.distributed.l2_adapters.fs_key_codec import object_key_to_filename
+from lmcache.v1.distributed.key_codec import (
+    encode_fs_filename as object_key_to_filename,
+)
 from lmcache.v1.distributed.l2_adapters.fs_native_l2_adapter import (
     _make_adapter_class,
 )
@@ -77,6 +84,7 @@ def _make_fs_native_adapter(tmp_path, mock, **kwargs):
     adapter_cls = _make_adapter_class(NativeConnectorL2Adapter)
     return adapter_cls(
         mock,
+        MemoryTags(MemorySegment.STORAGE, MemoryResidency.LOCAL),
         type_name="FSNativeL2Adapter",
         base_path=str(tmp_path),
         relative_tmp_dir="",

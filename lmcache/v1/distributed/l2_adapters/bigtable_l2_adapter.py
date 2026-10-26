@@ -183,7 +183,9 @@ class BigtableL2AdapterConfig(L2AdapterConfigBase):
         family_name: str = "cf",
         column_name: str = "data",
         max_capacity_gb: float = 0,
-        row_key_template: str = "{hash_prefix}@{model}@{rank}@{group}@{hash}@{salt}",
+        row_key_template: str = (
+            "{hash_prefix}@{model}@{rank}@{group}@{hash}@{salt}@{dtype}"
+        ),
         layer_group_size: int = 10,
         num_layers: int = 32,
         kv_size: int = 2,

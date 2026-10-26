@@ -27,9 +27,12 @@ def format_storage_key(
     Args:
         key: Object whose identity determines the name.
         template: Format string accepting ``model``, ``quoted_model``, ``rank``,
-            ``group``, ``hash``, ``hash_prefix``, ``salt`` and ``suffix``.
-            ``suffix`` includes the salt when nonempty. An empty trailing
-            ``@{salt}`` is omitted to preserve existing storage names.
+            ``group``, ``hash``, ``hash_prefix``, ``salt``, ``dtype`` and
+            ``suffix``. ``suffix`` includes the salt when nonempty, and the
+            dtype when nonempty (with the salt slot always emitted for a
+            non-empty dtype, so the dtype stays in a fixed position). An
+            empty trailing ``@{dtype}`` or ``@{salt}`` is omitted to preserve
+            existing storage names.
         model_separator: Replacement for slashes in ``model``.
         rank_format: Python integer format for ``rank``.
         model_suffix: Adapter-specific suffix applied to ``model``.
@@ -37,9 +40,16 @@ def format_storage_key(
     Returns:
         The formatted storage name.
     """
+    if not key.kv_dtype and template.endswith("@{dtype}"):
+        template = template[:-8]
     if not key.cache_salt and template.endswith("@{salt}"):
         template = template[:-7]
-    suffix = f"@{key.cache_salt}" if key.cache_salt else ""
+    if key.kv_dtype:
+        suffix = f"@{key.cache_salt}@{key.kv_dtype}"
+    elif key.cache_salt:
+        suffix = f"@{key.cache_salt}"
+    else:
+        suffix = ""
     chunk_hex = key.chunk_hash.hex()
     result = template.format(
         model=key.model_name.replace("/", model_separator) + model_suffix,
@@ -49,6 +59,7 @@ def format_storage_key(
         hash=chunk_hex,
         hash_prefix=chunk_hex[:4],
         salt=key.cache_salt,
+        dtype=key.kv_dtype,
         suffix=suffix,
     )
     return result
@@ -71,7 +82,9 @@ def decode_storage_key(
     """Recover an L2 key from its storage name.
 
     Args:
-        encoded: ``model@rank@group@hash[@salt]``.
+        encoded: ``model@rank@group@hash[@salt][@dtype]``. The 6-field shape
+        carries ``salt@dtype`` (the salt slot is always present when a
+        dtype is).
         model_decoder: Decoder for backend-specific model escaping.
 
     Returns:
@@ -81,10 +94,13 @@ def decode_storage_key(
         ValueError: The field count or hexadecimal fields are malformed.
     """
     parts = encoded.split("@")
+    kv_dtype = ""
     if len(parts) == 4:
         parts.append("")
+    elif len(parts) == 6:
+        kv_dtype = parts.pop()
     if len(parts) != 5:
-        raise ValueError("invalid ObjectKey encoding: expected 4 or 5 fields")
+        raise ValueError("invalid ObjectKey encoding: expected 4, 5 or 6 fields")
     model, rank, group, chunk_hash, salt = parts
     return ObjectKey(
         chunk_hash=bytes.fromhex(chunk_hash),
@@ -92,6 +108,7 @@ def decode_storage_key(
         object_group_id=int(group, 16),
         model_name=model_decoder(model),
         cache_salt=salt,
+        kv_dtype=kv_dtype,
     )
 
 

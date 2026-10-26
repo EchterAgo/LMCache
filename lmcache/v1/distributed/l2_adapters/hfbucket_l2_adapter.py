@@ -91,6 +91,8 @@ def _object_key_to_string(key: ObjectKey) -> str:
         f"{key.model_name}@{key.kv_rank:08x}"
         f"@{key.object_group_id:x}@{key.chunk_hash.hex()}"
     )
+    if key.kv_dtype:
+        return f"{base}@{key.cache_salt}@{key.kv_dtype}"
     if key.cache_salt:
         return f"{base}@{key.cache_salt}"
     return base

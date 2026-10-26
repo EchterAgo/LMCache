@@ -27,7 +27,9 @@ def _object_key_to_filename(key: ObjectKey) -> str:
 
     A non-empty ``cache_salt`` is appended as a trailing ``@``-delimited
     field, matching the S3 and filesystem L2 adapters. An empty salt retains
-    the exact legacy filename.
+    the exact legacy filename. A non-empty ``kv_dtype`` appends the salt slot
+    (even when empty) plus a trailing ``@``-delimited dtype field, so a
+    --kv-cache-dtype switch yields distinct object names.
 
     Args:
         key: Key identifying the stored cache object.
@@ -37,10 +39,15 @@ def _object_key_to_filename(key: ObjectKey) -> str:
     """
     safe_model_name = key.model_name.replace("/", "--")
     chunk_hex = key.chunk_hash.hex()
-    salt_suffix = f"@{key.cache_salt}" if key.cache_salt else ""
+    if key.kv_dtype:
+        suffix = f"@{key.cache_salt}@{key.kv_dtype}"
+    elif key.cache_salt:
+        suffix = f"@{key.cache_salt}"
+    else:
+        suffix = ""
     return (
         f"{safe_model_name}_{key.kv_rank:08x}_"
-        f"{key.object_group_id:x}_{chunk_hex}{salt_suffix}.bin"
+        f"{key.object_group_id:x}_{chunk_hex}{suffix}.bin"
     )
 
 

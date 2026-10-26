@@ -34,15 +34,26 @@ def object_key_to_filename(key: ObjectKey) -> str:
 
         <safe_model>@0x<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>@<cache_salt>.data
 
+    With a KV dtype (``kv_dtype`` non-empty; the salt slot is always
+    emitted, even when empty, so the dtype stays in a fixed position)::
+
+        <safe_model>@0x<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>@<cache_salt>@<kv_dtype>.data
+
     ``kv_rank`` is written in ``0x`` prefixed hex so each byte
     of the bitmap ``(ws<<24)|(rank<<16)|(local_ws<<8)|local``
     is directly readable. ``object_group_id`` is written in plain hex.
+
+    The 4-field (no salt) and 5-field (salt) shapes are bit-identical to
+    what pre-``kv_dtype`` builds wrote, so existing cache directories
+    remain valid and are read back with an empty ``kv_dtype``.
     """
     safe_model = key.model_name.replace("/", PATH_SLASH_REPLACEMENT)
     base = (
         f"{safe_model}{KEY_SEP}{key.kv_rank:#010x}"
         f"{KEY_SEP}{key.object_group_id:x}{KEY_SEP}{key.chunk_hash.hex()}"
     )
+    if key.kv_dtype:
+        return f"{base}{KEY_SEP}{key.cache_salt}{KEY_SEP}{key.kv_dtype}{FILE_EXT}"
     if key.cache_salt:
         return f"{base}{KEY_SEP}{key.cache_salt}{FILE_EXT}"
     return f"{base}{FILE_EXT}"
@@ -53,20 +64,31 @@ def filename_to_object_key(
 ) -> Optional[ObjectKey]:
     """Reverse :func:`object_key_to_filename`.
 
-    Accepts both the 4-field unsalted shape and the 5-field salted
-    shape (trailing ``cache_salt``). Returns ``None`` for anything
-    else. Since ``model_name`` is guaranteed not to contain ``@``,
-    plain ``split`` suffices — no marker, no rsplit.
+    Accepts the 4-field unsalted shape, the 5-field salted shape
+    (trailing ``cache_salt``), and the 6-field dtype shape (trailing
+    ``cache_salt@kv_dtype``). Returns ``None`` for anything else. Since
+    ``model_name``, ``cache_salt`` and ``kv_dtype`` are guaranteed not to
+    contain ``@``, plain ``split`` suffices — no marker, no rsplit.
     """
     if not filename.endswith(FILE_EXT):
         return None
     stem = filename[: -len(FILE_EXT)]
     parts = stem.split(KEY_SEP)
+    kv_dtype = ""
     if len(parts) == 4:
         safe_model, kv_rank_str, object_group_str, chunk_hash_hex = parts
         cache_salt = ""
     elif len(parts) == 5:
         safe_model, kv_rank_str, object_group_str, chunk_hash_hex, cache_salt = parts
+    elif len(parts) == 6:
+        (
+            safe_model,
+            kv_rank_str,
+            object_group_str,
+            chunk_hash_hex,
+            cache_salt,
+            kv_dtype,
+        ) = parts
     else:
         return None
 
@@ -86,6 +108,7 @@ def filename_to_object_key(
             kv_rank=kv_rank,
             object_group_id=object_group_id,
             cache_salt=cache_salt,
+            kv_dtype=kv_dtype,
         )
     except ValueError:
         return None

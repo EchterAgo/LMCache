@@ -196,6 +196,21 @@ class ObjectKey:
     hash, and extension are added.
     """
 
+    kv_dtype: str = ""
+    """ KV-cache element dtype this object's bytes are serialized in
+    (e.g. ``"bfloat16"``, ``"fp8_e4m3fn"``). Part of cache identity: the
+    same token content cached under two different ``--kv-cache-dtype``
+    settings produces different ObjectKeys, so a dtype switch can never
+    serve a stale-layout object. Defaults to empty string, in which case
+    serialized keys and filenames match the pre-kv_dtype shape (no
+    trailing dtype field) — no migration is needed for deployments that
+    do not set it.
+
+    Invariant: must not contain ``@``, ``/``, ``\\``, or NUL (same field
+    separator / path / C-string rationale as ``cache_salt``). Max length
+    128.
+    """
+
     _SALT_FORBIDDEN_CHARS = frozenset("@/\\\x00")
     _SALT_MAX_LEN = 128
 
@@ -218,6 +233,16 @@ class ObjectKey:
                 f"cache_salt exceeds max length {self._SALT_MAX_LEN} "
                 f"(got {len(self.cache_salt)})"
             )
+        bad = self._SALT_FORBIDDEN_CHARS & set(self.kv_dtype)
+        if bad:
+            raise ValueError(
+                f"kv_dtype must not contain {bad!r} (got {self.kv_dtype!r})"
+            )
+        if len(self.kv_dtype) > self._SALT_MAX_LEN:
+            raise ValueError(
+                f"kv_dtype exceeds max length {self._SALT_MAX_LEN} "
+                f"(got {len(self.kv_dtype)})"
+            )
 
     def to_encoded_object_key(self) -> "EncodedObjectKey":
         """Return the JSON-safe :class:`EncodedObjectKey` projection."""
@@ -227,6 +252,7 @@ class ObjectKey:
             kv_rank=self.kv_rank,
             object_group_id=self.object_group_id,
             cache_salt=self.cache_salt,
+            kv_dtype=self.kv_dtype,
         )
 
     @staticmethod
@@ -322,6 +348,10 @@ class EncodedObjectKey:
 
     cache_salt: str = ""
 
+    kv_dtype: str = ""
+    """Defaults to ``""`` so pre-``kv_dtype`` wire payloads still
+    deserialize (msgspec maps by field name)."""
+
     def to_object_key(self) -> ObjectKey:
         """Recover the corresponding :class:`ObjectKey`.
 
@@ -335,6 +365,7 @@ class EncodedObjectKey:
             kv_rank=self.kv_rank,
             object_group_id=self.object_group_id,
             cache_salt=self.cache_salt,
+            kv_dtype=self.kv_dtype,
         )
 
 
@@ -693,11 +724,13 @@ def ipc_key_to_object_keys(
     ObjectKeys are per-user isolated whenever the sender set a non-empty
     salt. There is intentionally no separate ``cache_salt`` parameter —
     duplicating the source of truth would risk silent isolation bugs
-    where a caller passes ``ipc_key`` but forgets the salt.
+    where a caller passes ``ipc_key`` but forgets the salt. ``kv_dtype``
+    is likewise read from ``ipc_key`` so a dtype switch yields distinct
+    keys.
 
     Args:
         ipc_key: The IPC key providing model_name, world_size, worker_id,
-            and cache_salt.
+            cache_salt, and kv_dtype.
         chunk_hashes: List of chunk hash bytes, one per chunk.
         object_group_ids: Object group ids to produce keys for.
 
@@ -706,6 +739,7 @@ def ipc_key_to_object_keys(
         for ``object_group_ids[i]``.
     """
     cache_salt = ipc_key.cache_salt
+    kv_dtype = ipc_key.kv_dtype
 
     # The (chunk_hash, kv_rank) expansion is independent of the object group,
     # so compute it once and reuse it for every group.
@@ -719,6 +753,7 @@ def ipc_key_to_object_keys(
                 kv_rank=kv_rank,
                 object_group_id=object_group_id,
                 cache_salt=cache_salt,
+                kv_dtype=kv_dtype,
             )
             for chunk_hash in chunk_hashes
             for kv_rank in kv_ranks
@@ -788,6 +823,7 @@ def ipc_key_to_grouped_object_keys(
                             kv_rank=kv_rank,
                             object_group_id=object_group_id,
                             cache_salt=ipc_key.cache_salt,
+                            kv_dtype=ipc_key.kv_dtype,
                         )
                         for chunk_hash in chunk_hashes
                     ],

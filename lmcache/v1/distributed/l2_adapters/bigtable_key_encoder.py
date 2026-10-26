@@ -31,7 +31,12 @@ class BigtableL2KeyEncoder:
             The formatted row key as bytes.
         """
         template = self.template
-        # Strip @{salt} if salt is empty to prevent a trailing @
+        # Strip trailing @{dtype} / @{salt} placeholders when the fields
+        # are empty so keys keep the pre-dtype shape. A non-empty dtype
+        # keeps the (possibly empty) salt slot, matching the shared
+        # positional convention.
+        if not key.kv_dtype and template.endswith("@{dtype}"):
+            template = template[:-8]
         if not key.cache_salt and template.endswith("@{salt}"):
             template = template[:-7]
 
@@ -47,6 +52,7 @@ class BigtableL2KeyEncoder:
             group=f"{key.object_group_id:x}",
             hash=hash_hex,
             salt=key.cache_salt,
+            dtype=key.kv_dtype,
         )
         if hasattr(key, "layer_id"):
             row_key_str += f"@layer_{key.layer_id}"

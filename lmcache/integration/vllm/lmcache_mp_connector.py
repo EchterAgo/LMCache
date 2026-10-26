@@ -80,6 +80,7 @@ from lmcache.integration.vllm.mp_server_launcher import (
 )
 from lmcache.integration.vllm.utils import (
     mla_only,
+    vllm_kv_cache_dtype_str,
     vllm_layout_hints,
 )
 from lmcache.utils import CacheRemoveEvent
@@ -603,6 +604,9 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
             vllm_config, kv_cache_config
         )
         cache_model_name = get_dcp_decorated_model_name(vllm_config, kv_cache_config)
+        # Canonical KV-cache dtype string, part of every object key so a
+        # --kv-cache-dtype switch cannot serve a stale-layout object.
+        cache_kv_dtype = vllm_kv_cache_dtype_str(vllm_config)
 
         assert vllm_config.kv_transfer_config is not None
         self._can_store = vllm_config.kv_transfer_config.is_kv_producer
@@ -735,6 +739,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 vllm_block_size=scheduler_block_size,
                 parallel_strategy=parallel_strategy,
                 extra_config=vllm_config.kv_transfer_config.kv_connector_extra_config,
+                kv_dtype=cache_kv_dtype,
             )
             self.request_trackers: dict[str, LMCacheMPRequestTracker] = {}
             # Worker events aggregated per step, awaiting take_events().
@@ -768,6 +773,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                 parallel_strategy=parallel_strategy,
                 extra_config=vllm_config.kv_transfer_config.kv_connector_extra_config,
                 enable_kv_events=self._enable_kv_events,
+                kv_dtype=cache_kv_dtype,
             )
             if self.transfer_intermediate_tensors:
                 # First Party

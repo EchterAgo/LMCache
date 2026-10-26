@@ -40,6 +40,55 @@ def is_false(value: str) -> bool:
     return value.lower() in ("false", "0", "no", "n", "off")
 
 
+def vllm_kv_cache_dtype_str(vllm_config: "VllmConfig | None" = None) -> str:
+    """Resolve the engine's KV-cache element dtype to a canonical string.
+
+    Used as the ``kv_dtype`` component of the LMCache object key so that
+    the same token content cached under two different ``--kv-cache-dtype``
+    settings yields distinct keys (a dtype switch can never serve a
+    stale-layout object). ``"auto"`` resolves to the model dtype via
+    vLLM's ``get_kv_cache_torch_dtype``.
+
+    Returns ``""`` when vLLM is unavailable or the dtype cannot be
+    resolved, so the key falls back to the pre-``kv_dtype`` shape.
+    """
+    try:
+        if vllm_config is None:
+            # Third Party
+            from vllm.config import get_current_vllm_config
+
+            vllm_config = get_current_vllm_config()
+        # Third Party
+        try:
+            from vllm.utils.torch_utils import get_kv_cache_torch_dtype
+        except ImportError:
+            # Third Party
+            from vllm.utils import get_kv_cache_torch_dtype
+
+        cache_cfg = vllm_config.cache_config
+        model_cfg = vllm_config.model_config
+        kv_dtype = get_kv_cache_torch_dtype(
+            cache_cfg.cache_dtype, model_cfg.dtype
+        )
+    except Exception:
+        logger.warning(
+            "Could not resolve the KV cache dtype for the LMCache object "
+            "key; falling back to an empty kv_dtype component.",
+            exc_info=True,
+        )
+        return ""
+
+    # First Party
+    from lmcache.utils import TORCH_DTYPE_TO_STR_DTYPE
+
+    name = TORCH_DTYPE_TO_STR_DTYPE.get(kv_dtype)
+    if name is None:
+        # Unknown torch dtype: use its str form, stripped of the
+        # "torch." prefix, so the key stays stable and '@'-free.
+        name = str(kv_dtype).removeprefix("torch.")
+    return name
+
+
 def vllm_layout_hints(vllm_config: "VllmConfig | None" = None) -> "LayoutHints":
     """Build layout_hints dict by querying vLLM at runtime."""
     hints: dict[str, str] = {}

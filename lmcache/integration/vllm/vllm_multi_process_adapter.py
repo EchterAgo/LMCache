@@ -680,12 +680,16 @@ class LMCacheMPSchedulerAdapter:
         mq_timeout: float = DEFAULT_MQ_TIMEOUT,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         extra_config: dict[str, Any] | None = None,
+        kv_dtype: str = "",
     ):
         """
         Args:
             server_urls: LMCache multiprocess request server URLs.
             context: The ZMQ context
             model_name: The model name used for LMCache keys
+            kv_dtype: Canonical KV-cache dtype string included in every
+                object key so a --kv-cache-dtype switch cannot serve a
+                stale-layout object. Empty = pre-kv_dtype key shape.
             vllm_block_size: The block size used in vLLM
             parallel_strategy:
                 The parallel strategy, which includes `mla_only`,
@@ -754,6 +758,7 @@ class LMCacheMPSchedulerAdapter:
 
         self.model_name = model_name
         self.parallel_strategy = parallel_strategy
+        self._kv_dtype = kv_dtype
 
         # Read chunk size from lmcache
         chunk_sizes: dict[str, int] = {}
@@ -1280,6 +1285,7 @@ class LMCacheMPSchedulerAdapter:
             request_id=request_id,
             cache_salt=cache_salt,
             request_configs=request_configs,
+            kv_dtype=self._kv_dtype,
         )
 
     def update_pending_store_count(self, req_id: str, count: int) -> bool:
@@ -1325,6 +1331,7 @@ class LMCacheMPWorkerAdapter:
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
         extra_config: dict[str, Any] | None = None,
         enable_kv_events: bool = False,
+        kv_dtype: str = "",
     ):
         """Initialize the worker adapter for current or legacy vLLM callers.
 
@@ -1332,6 +1339,8 @@ class LMCacheMPWorkerAdapter:
             server_url: LMCache multiprocess request server URL.
             context: The ZMQ context.
             model_name: The model name used for LMCache keys.
+            kv_dtype: Canonical KV-cache dtype string included in every
+                object key (must match the scheduler adapter's value).
             vllm_block_size: The block size used in vLLM, or legacy KV world
                 size when ``parallel_strategy`` is an int.
             parallel_strategy: Current ``ParallelStrategy`` metadata, or the
@@ -1455,6 +1464,7 @@ class LMCacheMPWorkerAdapter:
 
         self.model_name = model_name
         self.parallel_strategy = parallel_strategy
+        self._kv_dtype = kv_dtype
 
         # Read chunk size from lmcache
         try:
@@ -2698,4 +2708,5 @@ class LMCacheMPWorkerAdapter:
             request_id=request_id,
             cache_salt=cache_salt,
             request_configs=request_configs,
+            kv_dtype=self._kv_dtype,
         )

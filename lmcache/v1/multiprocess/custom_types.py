@@ -60,6 +60,16 @@ class IPCCacheServerKey:
     # ObjectKey.cache_salt). Validated in __post_init__.
     cache_salt: str = ""
 
+    # === KV-cache dtype (part of cache identity) ===
+    # The element dtype the stored KV bytes are serialized in (e.g.
+    # "bfloat16", "fp8_e4m3fn"). Same content under a different
+    # --kv-cache-dtype produces a different key, so a dtype switch can
+    # never serve a stale-layout object. Defaults to "" so pre-kv_dtype
+    # wire payloads decode on new code (msgspec maps by field name) and
+    # keys match the pre-kv_dtype shape. Validated in __post_init__ with
+    # the same rules as cache_salt.
+    kv_dtype: str = ""
+
     # Request-scoped LMCache configuration passed across the IPC boundary.
     # It is metadata, not part of cache identity.
     request_configs: dict[str, Any] | None = field(default=None, compare=False)
@@ -85,6 +95,16 @@ class IPCCacheServerKey:
                 f"cache_salt exceeds max length {self._SALT_MAX_LEN} "
                 f"(got {len(self.cache_salt)})"
             )
+        bad = self._SALT_FORBIDDEN_CHARS & set(self.kv_dtype)
+        if bad:
+            raise ValueError(
+                f"kv_dtype must not contain {bad!r} (got {self.kv_dtype!r})"
+            )
+        if len(self.kv_dtype) > self._SALT_MAX_LEN:
+            raise ValueError(
+                f"kv_dtype exceeds max length {self._SALT_MAX_LEN} "
+                f"(got {len(self.kv_dtype)})"
+            )
 
     # Helper function for unit tests only
     @classmethod
@@ -100,6 +120,7 @@ class IPCCacheServerKey:
         cache_salt: str = "",
         num_kv_readers: int = 1,
         request_configs: dict[str, Any] | None = None,
+        kv_dtype: str = "",
     ) -> "IPCCacheServerKey":
         """Create a key from token ids. Only used by the tests."""
         return cls(
@@ -113,6 +134,7 @@ class IPCCacheServerKey:
             request_id=request_id,
             cache_salt=cache_salt,
             request_configs=request_configs,
+            kv_dtype=kv_dtype,
         )
 
     def require_num_kv_readers(self) -> int:
@@ -145,6 +167,7 @@ class IPCCacheServerKey:
             request_id=self.request_id,
             cache_salt=self.cache_salt,
             request_configs=self.request_configs,
+            kv_dtype=self.kv_dtype,
         )
 
 

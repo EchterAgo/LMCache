@@ -66,11 +66,17 @@ def _object_key_to_string(key: ObjectKey) -> str:
 
     Salted (trailing ``cache_salt``):
         <model_name>@<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>@<cache_salt>
+
+    With a KV dtype (trailing ``cache_salt@kv_dtype``; the salt slot is
+    always emitted when a dtype is set, even when empty):
+        <model_name>@<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>@<cache_salt>@<kv_dtype>
     """
     base = (
         f"{key.model_name}@{key.kv_rank:08x}"
         f"@{key.object_group_id:x}@{key.chunk_hash.hex()}"
     )
+    if key.kv_dtype:
+        return f"{base}@{key.cache_salt}@{key.kv_dtype}"
     if key.cache_salt:
         return f"{base}@{key.cache_salt}"
     return base
@@ -185,7 +191,9 @@ class BigtableL2AdapterConfig(L2AdapterConfigBase):
         family_name: str = "cf",
         column_name: str = "data",
         max_capacity_gb: float = 0,
-        row_key_template: str = "{hash_prefix}@{model}@{rank}@{group}@{hash}@{salt}",
+        row_key_template: str = (
+            "{hash_prefix}@{model}@{rank}@{group}@{hash}@{salt}@{dtype}"
+        ),
         layer_group_size: int = 10,
         num_layers: int = 32,
         kv_size: int = 2,

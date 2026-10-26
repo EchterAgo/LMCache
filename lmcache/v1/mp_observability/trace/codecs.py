@@ -156,6 +156,7 @@ def _enc_object_key(k: ObjectKey) -> dict[str, Any]:
         "model_name": k.model_name,
         "kv_rank": k.kv_rank,
         "object_group_id": k.object_group_id,
+        "kv_dtype": k.kv_dtype,
     }
 
 
@@ -165,6 +166,7 @@ def _dec_object_key(d: dict[str, Any]) -> ObjectKey:
         model_name=d["model_name"],
         kv_rank=d["kv_rank"],
         object_group_id=d.get("object_group_id", 0),
+        kv_dtype=d.get("kv_dtype", ""),
     )
 
 

@@ -65,12 +65,15 @@ def _string_to_object_key(name: str) -> ObjectKey:
     """Reverse of :func:`_object_key_to_string`.
 
     Expects
-    ``<model_name>@<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>[@<cache_salt>]``.
+    ``<model_name>@<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>[@<cache_salt>][@<kv_dtype>]``.
+    The 6-field shape carries ``cache_salt@kv_dtype`` (the salt slot is
+    always present when a dtype is).
 
     Raises:
         ValueError: ``name`` does not match the expected format.
     """
     parts = name.split("@")
+    kv_dtype = ""
     if len(parts) == 4:
         model_name, kv_rank_hex, object_group_id_hex, chunk_hash_hex = parts
         cache_salt = ""
@@ -81,6 +84,15 @@ def _string_to_object_key(name: str) -> ObjectKey:
             object_group_id_hex,
             chunk_hash_hex,
             cache_salt,
+        ) = parts
+    elif len(parts) == 6:
+        (
+            model_name,
+            kv_rank_hex,
+            object_group_id_hex,
+            chunk_hash_hex,
+            cache_salt,
+            kv_dtype,
         ) = parts
     else:
         raise ValueError(f"unparsable S3 object name {name!r}: wrong field count")
@@ -109,6 +121,7 @@ def _string_to_object_key(name: str) -> ObjectKey:
         kv_rank=kv_rank,
         object_group_id=object_group_id,
         cache_salt=cache_salt,
+        kv_dtype=kv_dtype,
     )
 
 
@@ -176,13 +189,20 @@ def _object_key_to_string(key: ObjectKey) -> str:
 
         <model_name>@<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>@<cache_salt>
 
-    ``@`` in ``model_name`` and ``cache_salt`` is rejected by
-    ``ObjectKey.__post_init__``, so the format is unambiguous.
+    With a KV dtype (trailing ``cache_salt@kv_dtype``; the salt slot is
+    always emitted when a dtype is set, even when empty)::
+
+        <model_name>@<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>@<cache_salt>@<kv_dtype>
+
+    ``@`` in ``model_name``, ``cache_salt`` and ``kv_dtype`` is rejected
+    by ``ObjectKey.__post_init__``, so the format is unambiguous.
     """
     base = (
         f"{key.model_name}@{key.kv_rank:08x}"
         f"@{key.object_group_id:x}@{key.chunk_hash.hex()}"
     )
+    if key.kv_dtype:
+        return f"{base}@{key.cache_salt}@{key.kv_dtype}"
     if key.cache_salt:
         return f"{base}@{key.cache_salt}"
     return base

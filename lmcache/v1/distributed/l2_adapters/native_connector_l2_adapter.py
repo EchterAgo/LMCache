@@ -81,11 +81,18 @@ def _object_key_to_string(key: ObjectKey) -> str:
     Salted (trailing ``cache_salt``)::
 
         <model_name>@<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>@<cache_salt>
+
+    With a KV dtype (``kv_dtype`` non-empty; the salt slot is always
+    emitted, even when empty, so the dtype stays in a fixed position)::
+
+        <model_name>@<kv_rank_hex>@<object_group_id_hex>@<chunk_hash_hex>@<cache_salt>@<kv_dtype>
     """
     base = (
         f"{key.model_name}{_KEY_SEP}{key.kv_rank:08x}"
         f"{_KEY_SEP}{key.object_group_id:x}{_KEY_SEP}{key.chunk_hash.hex()}"
     )
+    if key.kv_dtype:
+        return f"{base}{_KEY_SEP}{key.cache_salt}{_KEY_SEP}{key.kv_dtype}"
     if key.cache_salt:
         return f"{base}{_KEY_SEP}{key.cache_salt}"
     return base

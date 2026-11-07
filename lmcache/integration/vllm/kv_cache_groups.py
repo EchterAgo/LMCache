@@ -83,6 +83,31 @@ def _is_sliding_window_spec(spec: Any) -> bool:
     return any(cls.__name__ == "SlidingWindowSpec" for cls in type(spec).__mro__)
 
 
+def get_group_sliding_window(kv_cache_config: Any) -> list[bool]:
+    """Return whether each engine group is a sliding-window group.
+
+    vLLM's sliding-window manager never prefix-hashes the blocks a window
+    has moved past (they can never serve a hit), so their ``block_hash``
+    stays ``None`` forever and they are not watched for eviction; the
+    lazy-offload hash snapshot must treat them exactly like the null
+    placeholder blocks. ``UniformTypeKVCacheSpecs`` is unwrapped first like
+    the other predicates; a missing group list yields the empty list.
+    """
+    groups = (
+        getattr(kv_cache_config, "kv_cache_groups", ()) or ()
+        if kv_cache_config is not None
+        else ()
+    )
+    flags: list[bool] = []
+    for group in groups:
+        spec = getattr(group, "kv_cache_spec", None)
+        inner = getattr(spec, "kv_cache_specs", None)
+        if isinstance(inner, dict) and inner:
+            spec = next(iter(inner.values()))
+        flags.append(spec is not None and _is_sliding_window_spec(spec))
+    return flags
+
+
 def _is_cachable_mamba_spec(spec: Any) -> bool:
     """Return whether the spec is a snapshotting Mamba/linear-attention spec.
 

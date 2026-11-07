@@ -186,6 +186,7 @@ class LazyOffloadManager:
         configs: dict[str, ConfigValue] | None,
         group_tokens_per_block: list[int],
         completion_tracker: StoreCompletionTracker,
+        group_sliding_window: list[bool] | None = None,
     ) -> None:
         """Create an unbound scheduler-side manager.
 
@@ -195,9 +196,15 @@ class LazyOffloadManager:
                 to estimate the next step's block pressure. Scratch groups
                 report ``0`` and add no pressure.
             completion_tracker: Adapter view aggregating per-worker receipts.
+            group_sliding_window: Per engine group, whether vLLM's spec is a
+                sliding-window one. Such groups' out-of-window blocks never
+                carry a prefix-cache hash (see
+                :meth:`add_store_candidate`); empty/``None`` means no group
+                is treated as sliding-window.
         """
         self._configs = dict(configs or {})
         self._group_tokens_per_block = list(group_tokens_per_block)
+        self._group_sliding_window = list(group_sliding_window or [])
         self._completion_tracker = completion_tracker
         # Both are set by bind_block_pool: the policy reads the pool.
         self._gpu_block_pool: "BlockPool | None" = None
@@ -259,11 +266,36 @@ class LazyOffloadManager:
         # itself still reads them through ``op.block_ids``, so the bytes filed
         # are unchanged. A None on a *real* block is left in place: that is
         # the recycled-block case the policy must reject.
-        block_hashes: BlockHashes = {
-            block_id: pool.blocks[block_id].block_hash
-            for block_id in metadata.op.flat_block_ids
-            if not pool.blocks[block_id].is_null
-        }
+        #
+        # The same reasoning covers the *real* out-of-window blocks of a
+        # sliding-window group still named by the block table: vLLM's
+        # sliding-window manager only hashes blocks that can still serve a
+        # hit, so a retired position keeps ``block_hash is None`` forever,
+        # and once the window advances such an id is a stale alias of a live
+        # block (freed and reallocated, often to the same request). Neither
+        # case is the recycled-real-block hazard the policy guards against --
+        # the bytes at an out-of-window position are never read back (a hit
+        # restores only the window) -- so they are skipped rather than
+        # breaking the request's whole prefix chain.
+        groups: list[list[int]]
+        if metadata.op.block_ids and isinstance(metadata.op.block_ids[0], int):
+            # IPC-flattened single-group form (see LoadStoreOp.flat_block_ids).
+            groups = [list(metadata.op.block_ids)]
+        else:
+            groups = list(metadata.op.block_ids)
+        block_hashes: BlockHashes = {}
+        for group_idx, group_ids in enumerate(groups):
+            sliding_window = (
+                group_idx < len(self._group_sliding_window)
+                and self._group_sliding_window[group_idx]
+            )
+            for block_id in group_ids:
+                block = pool.blocks[block_id]
+                if block.is_null:
+                    continue
+                if sliding_window and block.block_hash is None:
+                    continue
+                block_hashes[block_id] = block.block_hash
         self._require_policy().add(self._rebind_tokens(metadata), block_hashes)
 
     def on_scheduler_step(

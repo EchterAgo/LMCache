@@ -60,6 +60,7 @@ from lmcache.integration.vllm.kv_cache_group_edits import (
 )
 from lmcache.integration.vllm.kv_cache_groups import (
     create_engine_group_infos_from_vllm,
+    get_group_sliding_window,
     get_tokens_per_block,
     is_scratch_spec,
 )
@@ -619,6 +620,10 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
         group_tokens_per_block = get_group_tokens_per_block(
             vllm_config, kv_cache_config
         )
+        # Per engine group, whether vLLM's spec is a sliding-window one: those
+        # groups' out-of-window blocks never carry a prefix-cache hash, so the
+        # lazy-offload hash snapshot must skip them (see LazyOffloadManager).
+        self._group_sliding_window = get_group_sliding_window(kv_cache_config)
         self._prefix_replay_tokens = get_prefix_replay_tokens(kv_cache_config)
         mamba_cache_mode = getattr(vllm_config.cache_config, "mamba_cache_mode", "none")
         self._reserve_last_token_for_lookup = mamba_cache_mode in ("align", "all")
@@ -882,6 +887,7 @@ class LMCacheMPConnector(KVConnectorBase_V1, SupportsHMA):
                     vllm_config.kv_transfer_config.kv_connector_extra_config,
                     self._group_tokens_per_block,
                     self.scheduler_adapter,
+                    group_sliding_window=self._group_sliding_window,
                 )
 
     @property

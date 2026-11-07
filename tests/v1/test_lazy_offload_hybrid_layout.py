@@ -2,10 +2,15 @@
 """Regression tests for the lazy-offload path on a hybrid (Mamba/attention)
 KV-cache layout.
 
-Covers the two blockers that ``lmcache.mp.lazy_offload`` exposed on the
-Qwen3.8-Flash-Next MTP layout (group token spans ``[1600, 1600, 1600, 1600, 0,
-1600]``: a zero-span spec-decode scratch group, and align-mode mamba block
-tables padded with vLLM's null placeholder block):
+Covers the three blockers that ``lmcache.mp.lazy_offload`` exposed on the
+Qwen3.8-Flash-Next layouts:
+
+- MTP (group token spans ``[1600, 1600, 1600, 1600, 0, 1600]``): a zero-span
+  spec-decode scratch group, and align-mode mamba block tables padded with
+  vLLM's null placeholder block.
+- DFlash2 (``[3200, 3200, 3200, 3200, 0, 3200, 64]``): the drafter's
+  sliding-window group, whose real out-of-window blocks never carry a
+  prefix-cache hash.
 
 - ``2b5ec51d``: ``_drain`` divided the scheduled-token count by every group
   span, so the zero-span scratch group raised ``ZeroDivisionError`` on the
@@ -14,6 +19,10 @@ tables padded with vLLM's null placeholder block):
   block including the null placeholder (which never carries one), so the
   eviction-aware policy rejected every store op as ``rejected_unhashed`` and
   the LMCache prefix cache never populated on a hybrid model.
+- (this change): the same rejection recurred with DFlash2 because a real
+  sliding-window group's out-of-window blocks keep ``block_hash is None``
+  forever (vLLM only hashes what can still serve a hit). The snapshot now
+  skips unhashed blocks in groups declared sliding-window.
 
 A real ``vllm.v1.core.block_pool.BlockPool`` is used so ``is_null``, the free
 queue, and ``touch``/``free_blocks`` behave exactly as in production.
@@ -224,3 +233,100 @@ def test_null_block_not_pinned_on_drain():
     assert pool.blocks[2].ref_cnt == 1
     # The null block was covered by the op but must not be pinned.
     assert pool.blocks[0].ref_cnt == 0
+
+
+# ---------------------------------------------------------------------------
+# DFlash2: unhashed real blocks of a sliding-window group must not reject
+# ---------------------------------------------------------------------------
+
+
+def test_sliding_window_unhashed_block_admitted():
+    """A store op covering a sliding-window group's unhashed blocks is admitted.
+
+    vLLM's sliding-window manager only hashes blocks that can still serve a
+    hit, so retired positions keep ``block_hash is None`` forever. With the
+    group declared sliding-window, the snapshot skips them instead of
+    rejecting the op and breaking the request's whole prefix chain.
+    """
+    pool = _make_pool(num_blocks=64)
+    _hash_block(pool, 1, b"h1")
+    # Group 1 (sliding window): blocks 4 and 5 are real, out-of-window, no hash.
+    assert not pool.blocks[4].is_null and pool.blocks[4].block_hash is None
+
+    manager = LazyOffloadManager(
+        configs={},
+        group_tokens_per_block=[1600, 64],
+        completion_tracker=_FakeCompletionTracker(),
+        group_sliding_window=[False, True],
+    )
+    manager.bind_block_pool(pool)
+
+    meta = _store_meta(
+        "a", [[1], [4, 5]], token_ids=list(range(1664)), start=0, end=1664
+    )
+    manager.add_store_candidate(meta)
+
+    counters = manager._policy._counters
+    assert counters.rejected_unhashed == 0
+    assert manager._policy.has_pending_request("a")
+
+    # The buffered snapshot holds the hashed block; the SW group's unhashed
+    # blocks are excluded.
+    snapshot = manager._policy._pending["a"][0].block_hashes
+    assert set(snapshot) == {1}
+
+
+def test_sliding_window_hashed_block_still_tracked():
+    """A sliding-window group's in-window blocks keep their hash and snapshot.
+
+    The skip is per block (only ``None`` hashes are dropped), not per group:
+    a hashed block in a sliding-window group is still watched for eviction
+    exactly like any other cached block.
+    """
+    pool = _make_pool(num_blocks=64)
+    _hash_block(pool, 1, b"h1")
+    _hash_block(pool, 4, b"h4")  # in-window block of the sliding group
+
+    manager = LazyOffloadManager(
+        configs={},
+        group_tokens_per_block=[1600, 64],
+        completion_tracker=_FakeCompletionTracker(),
+        group_sliding_window=[False, True],
+    )
+    manager.bind_block_pool(pool)
+
+    meta = _store_meta(
+        "a", [[1], [4, 5]], token_ids=list(range(1664)), start=0, end=1664
+    )
+    manager.add_store_candidate(meta)
+
+    snapshot = manager._policy._pending["a"][0].block_hashes
+    # h4 hashed in-window block tracked; block 5 unhashed out-of-window skipped.
+    assert set(snapshot) == {1, 4}
+
+
+def test_unhashed_block_in_normal_group_still_rejected():
+    """Without a sliding-window declaration, the reject rule is unchanged.
+
+    A ``None`` hash on a real block of a group that is *not* sliding-window
+    remains the recycled-block case the policy must reject: the group flag
+    only relaxes the groups vLLM provably never hashes.
+    """
+    pool = _make_pool(num_blocks=64)
+    _hash_block(pool, 1, b"h1")
+
+    manager = LazyOffloadManager(
+        configs={},
+        group_tokens_per_block=[1600, 64],
+        completion_tracker=_FakeCompletionTracker(),
+        group_sliding_window=[False, False],
+    )
+    manager.bind_block_pool(pool)
+
+    meta = _store_meta(
+        "a", [[1], [4, 5]], token_ids=list(range(1664)), start=0, end=1664
+    )
+    manager.add_store_candidate(meta)
+
+    assert manager._policy._counters.rejected_unhashed == 1
+    assert not manager._policy.has_pending_request("a")
